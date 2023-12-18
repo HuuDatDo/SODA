@@ -84,6 +84,18 @@ def normalize_to_neg_one_to_one(img):
 def unnormalize_to_zero_to_one(t):
     return (t + 1) * 0.5
 
+# modulation
+
+class ModulatedNorm(nn.Module):
+    def __init__(self, num_features, num_groups=32):
+        super().__init__()
+        self.group_norm = torch.nn.GroupNorm(num_groups=num_groups, num_channels=num_features, eps=1e-6, affine=False)
+
+    def forward(self, x, z_s, z_b):
+        x = self.group_norm(x)
+        x = x * z_s[:, :, None, None] + z_b[:, :, None, None]
+        return x
+
 # small helper modules
 
 def Upsample(dim, dim_out = None):
@@ -143,15 +155,25 @@ class RandomOrLearnedSinusoidalPosEmb(nn.Module):
 # building block modules
 
 class Block(nn.Module):
-    def __init__(self, dim, dim_out, groups = 8):
+    def __init__(self, dim, dim_out, groups = 8, use_modulation=True):
         super().__init__()
         self.proj = nn.Conv2d(dim, dim_out, 3, padding = 1)
         self.norm = nn.GroupNorm(groups, dim_out)
         self.act = nn.SiLU()
 
-    def forward(self, x, scale_shift = None):
+        self.use_modulation = use_modulation
+        if self.use_modulation:
+            self.modulated_norm1 = ModulatedNorm(in_channels)
+            self.modulated_norm2 = ModulatedNorm(out_channels)
+
+    def forward(self, x, scale_shift = None, z_s=None, z_b=None):
         x = self.proj(x)
-        x = self.norm(x)
+        # norm replacement
+        # x = self.norm(x)
+        if self.use_modulation and z_s is not None and z_b is not None:
+            x = self.modulated_norm(x, z_s, z_b)
+        else:
+            x = self.norm(x)
 
         if exists(scale_shift):
             scale, shift = scale_shift
@@ -172,7 +194,8 @@ class ResnetBlock(nn.Module):
         self.block2 = Block(dim_out, dim_out, groups = groups)
         self.res_conv = nn.Conv2d(dim, dim_out, 1) if dim != dim_out else nn.Identity()
 
-    def forward(self, x, time_emb = None):
+
+    def forward(self, x, time_emb = None, z_s=None, z_b=None):
 
         scale_shift = None
         if exists(self.mlp) and exists(time_emb):
@@ -267,6 +290,41 @@ class Attention(nn.Module):
         out = rearrange(out, 'b h (x y) d -> b (h d) x y', x = h, y = w)
         return self.to_out(out)
 
+# conceptual
+
+class ModulatedUNet(nn.Module):
+    def __init__(self, unet, num_latent_sections):
+        super().__init__()
+        self.unet = unet
+        self.num_latent_sections = num_latent_sections
+
+    def forward(self, x, t, z):
+        zs = torch.chunk(z, self.num_latent_sections + 1, dim=1)
+        
+        # Modulation
+        x = x * zs[0] 
+        intermediates = []
+        for i, layer in enumerate(self.unet.layers):
+            if isinstance(layer, (Downsample, Upsample, ResnetBlock)):
+                scale_shift = zs[(i // 2) + 1] if i < len(zs) else None
+                x = layer(x, t, scale_shift)
+            else:
+                x = layer(x)
+            intermediates.append(x)
+
+        # masking: randomly zero out some of zs sections
+        if self.training:
+            mask = torch.bernoulli(torch.full((len(zs),), 0.5)).to(x.device)
+            intermediates = [intermediate * mask[i] for i, intermediate in enumerate(intermediates)]
+
+        for i, layer in enumerate(reversed(self.unet.layers)):
+            index = len(self.unet.layers) - i - 1
+            x = layer(x, intermediates[index])
+
+        return x
+
+# modulated_unet = ModulatedUNet(unet, num_latent_sections=m)
+
 # model
 
 class Unet(nn.Module):
@@ -287,9 +345,12 @@ class Unet(nn.Module):
         attn_dim_head = 32,
         attn_heads = 4,
         full_attn = None,    # defaults to full attention only for inner most layer
-        flash_attn = False
+        flash_attn = False,
+        use_modulation = True 
     ):
         super().__init__()
+        
+        self.m = resnet_block_groups // 2 # half
 
         # determine dimensions
 
@@ -384,8 +445,19 @@ class Unet(nn.Module):
     def downsample_factor(self):
         return 2 ** (len(self.downs) - 1)
 
-    def forward(self, x, latent, time, x_self_cond = None):
+    def forward(self, x, z, time, x_self_cond = None):
         assert all([divisible_by(d, self.downsample_factor) for d in x.shape[-2:]]), f'your input dimensions {x.shape[-2:]} need to be divisible by {self.downsample_factor}, given the unet'
+
+        num_layers = self.m + 1 # m + 1 sections
+        z_s, z_b = torch.chunk(z, 2 * num_layers, dim=1) # z to 2*m pieces
+
+        z_s_sections = torch.chunk(z_s, num_layers, dim=1)
+        z_b_sections = torch.chunk(z_b, num_layers, dim=1)
+
+        # layer masking to each latent sub-vector during training
+        if self.training and mask_prob is not None:
+            z_s_sections = apply_layer_masking(z_s_sections, mask_prob)
+            z_b_sections = apply_layer_masking(z_b_sections, mask_prob)
 
         if self.self_condition:
             x_self_cond = default(x_self_cond, lambda: torch.zeros_like(x))
@@ -398,6 +470,7 @@ class Unet(nn.Module):
 
         h = []
 
+        # downsample
         for block1, block2, attn, downsample in self.downs:
             x = block1(x, t)
             h.append(x)
@@ -412,7 +485,12 @@ class Unet(nn.Module):
         x = self.mid_attn(x) + x
         x = self.mid_block2(x, t)
 
+        # TODO: add modulation vectors to each resblock here
+        # upsample
         for block1, block2, attn, upsample in self.ups:
+            current_z_s = z_s_sections[block1 * self.num_res_blocks + block2]
+            current_z_b = z_b_sections[block1 * self.num_res_blocks + block2]
+
             x = torch.cat((x, h.pop()), dim = 1)
             x = block1(x, t)
 
@@ -420,7 +498,7 @@ class Unet(nn.Module):
             x = block2(x, t)
             x = attn(x) + x
 
-            x = upsample(x)
+            x = upsample(x, z_s=current_z_s, z_b=current_z_b)
 
         x = torch.cat((x, r), dim = 1)
 
@@ -468,7 +546,6 @@ def inverted_beta_schedule(timesteps, s = 0.008):
     alphas_cumprod = alphas_cumprod / alphas_cumprod[0]
     betas = 1 - (alphas_cumprod[1:] / alphas_cumprod[:-1])
     return torch.clip(betas, 0, 0.999)
-    
 
 def sigmoid_beta_schedule(timesteps, start = -3, end = 3, tau = 1, clamp_min = 1e-5):
     """
@@ -527,7 +604,7 @@ class GaussianDiffusion(nn.Module):
         elif beta_schedule == 'sigmoid':
             beta_schedule_fn = sigmoid_beta_schedule
         elif beta_schedule == 'inverted':
-            beta_schedule_fn = inverted_beta_schedule
+            beta_schedule_fn = inverted_beta_schedule        
         else:
             raise ValueError(f'unknown beta schedule {beta_schedule}')
 
