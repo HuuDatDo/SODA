@@ -84,6 +84,24 @@ def normalize_to_neg_one_to_one(img):
 def unnormalize_to_zero_to_one(t):
     return (t + 1) * 0.5
 
+# Layer Masking
+def layer_masking(z, mask_prob=0.2):
+    """
+    Randomly masks a subset of latent z along the sub-latent.
+
+    Parameters:
+    - z: The input latent tensor with shape (batch_size, sub-latent num, dim).
+    - mask_prob: The probability of masking each element along the sequence length.
+
+    Returns:
+    - masked_z: The masked latent tensor.
+    """
+    batch_size, num_latent, dim = z.size()
+    # Generate a mask using Bernoulli distribution
+    mask = torch.bernoulli(torch.full((batch_size, num_latent), mask_prob)).unsqueeze(-1)
+    mask = mask.expand(batch_size, num_latent, dim)
+    return z * mask
+
 # modulation
 
 class ModulatedNorm(nn.Module):
@@ -292,36 +310,36 @@ class Attention(nn.Module):
 
 # conceptual
 
-class ModulatedUNet(nn.Module):
-    def __init__(self, unet, num_latent_sections):
-        super().__init__()
-        self.unet = unet
-        self.num_latent_sections = num_latent_sections
+# class ModulatedUNet(nn.Module):
+#     def __init__(self, unet, num_latent_sections):
+#         super().__init__()
+#         self.unet = unet
+#         self.num_latent_sections = num_latent_sections
 
-    def forward(self, x, t, z):
-        zs = torch.chunk(z, self.num_latent_sections + 1, dim=1)
+#     def forward(self, x, t, z):
+#         zs = torch.chunk(z, self.num_latent_sections + 1, dim=1)
         
-        # Modulation
-        x = x * zs[0] 
-        intermediates = []
-        for i, layer in enumerate(self.unet.layers):
-            if isinstance(layer, (Downsample, Upsample, ResnetBlock)):
-                scale_shift = zs[(i // 2) + 1] if i < len(zs) else None
-                x = layer(x, t, scale_shift)
-            else:
-                x = layer(x)
-            intermediates.append(x)
+#         # Modulation
+#         x = x * zs[0] 
+#         intermediates = []
+#         for i, layer in enumerate(self.unet.layers):
+#             if isinstance(layer, (Downsample, Upsample, ResnetBlock)):
+#                 scale_shift = zs[(i // 2) + 1] if i < len(zs) else None
+#                 x = layer(x, t, scale_shift)
+#             else:
+#                 x = layer(x)
+#             intermediates.append(x)
 
-        # masking: randomly zero out some of zs sections
-        if self.training:
-            mask = torch.bernoulli(torch.full((len(zs),), 0.5)).to(x.device)
-            intermediates = [intermediate * mask[i] for i, intermediate in enumerate(intermediates)]
+#         # masking: randomly zero out some of zs sections
+#         if self.training:
+#             mask = torch.bernoulli(torch.full((len(zs),), 0.5)).to(x.device)
+#             intermediates = [intermediate * mask[i] for i, intermediate in enumerate(intermediates)]
 
-        for i, layer in enumerate(reversed(self.unet.layers)):
-            index = len(self.unet.layers) - i - 1
-            x = layer(x, intermediates[index])
+#         for i, layer in enumerate(reversed(self.unet.layers)):
+#             index = len(self.unet.layers) - i - 1
+#             x = layer(x, intermediates[index])
 
-        return x
+#         return x
 
 # modulated_unet = ModulatedUNet(unet, num_latent_sections=m)
 
@@ -456,8 +474,8 @@ class Unet(nn.Module):
 
         # layer masking to each latent sub-vector during training
         if self.training and mask_prob is not None:
-            z_s_sections = apply_layer_masking(z_s_sections, mask_prob)
-            z_b_sections = apply_layer_masking(z_b_sections, mask_prob)
+            z_s_sections = layer_masking(z_s_sections, mask_prob)
+            z_b_sections = layer_masking(z_b_sections, mask_prob)
 
         if self.self_condition:
             x_self_cond = default(x_self_cond, lambda: torch.zeros_like(x))
