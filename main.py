@@ -7,12 +7,14 @@ from ddpm.denoising_diffusion_pytorch import Unet, GaussianDiffusion, Trainer
 # TODO: Add Layer Modulation to Unet
 model = Unet(
     dim = 64,
+    dim_latent = 64,
     dim_mults = (1, 2, 4, 8),
     flash_attn = True
 )
+print(model)
 
 clip_model, _ = clip.load('RN50', device='cpu')
-encoder = clip_model.visual
+encoder = clip_model.visual.eval()
 
 diffusion = GaussianDiffusion(
     model,
@@ -40,7 +42,7 @@ dataset = torchvision.datasets.CIFAR10(root='./data', train=True,
 trainer = Trainer(
     diffusion,
     dataset,
-    train_batch_size = 32,
+    train_batch_size = 16,
     train_lr = 8e-5,
     train_num_steps = 700000,         # total training steps
     gradient_accumulate_every = 2,    # gradient accumulation steps

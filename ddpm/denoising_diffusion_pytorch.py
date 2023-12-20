@@ -85,21 +85,29 @@ def unnormalize_to_zero_to_one(t):
     return (t + 1) * 0.5
 
 # Layer Masking
-def layer_masking(z, mask_prob=0.2):
+def layer_masking(z, mask_prob):
     """
     Randomly masks a subset of latent z along the sub-latent.
 
     Parameters:
-    - z: The input latent tensor with shape (batch_size, sub-latent num, dim).
+    - z: The input latent tensor with tuple of sub-latent of size (batch_size, dim).
     - mask_prob: The probability of masking each element along the sequence length.
 
     Returns:
     - masked_z: The masked latent tensor.
     """
-    batch_size, num_latent, dim = z.size()
+    batch_size, dim = z[0].size()
+    device = z[0].device
+    num_latent = len(z)
+    
+    # Pad the sub-latent to the same size
+    for i, sub_z in enumerate(z):
+        if sub_z.size(-1) != dim:
+            z[i] = F.pad(sub_z, (0,dim-sub_z.size(1),0,0), 'constant', 0)
+    z = torch.stack(z, dim=1)
     # Generate a mask using Bernoulli distribution
     mask = torch.bernoulli(torch.full((batch_size, num_latent), mask_prob)).unsqueeze(-1)
-    mask = mask.expand(batch_size, num_latent, dim)
+    mask = mask.expand(batch_size, num_latent, dim).to(device)
     return z * mask
 
 # Adaptive group normalization
@@ -115,11 +123,15 @@ class AdaptiveGroupNorm(nn.Module):
         self.group_norm = nn.GroupNorm(num_groups, num_channels)
 
     def forward(self, x, x_s, x_b):
-        return x_s * self.group_norm(x) + x_b
+        print("BEFORE", x.size())
+        norm_x = x_s * self.group_norm(x) + x_b
+        print("NORM", norm_x.size())
+        return norm_x
 
 # small helper modules
 
 def Upsample(dim, dim_out = None):
+    
     return nn.Sequential(
         nn.Upsample(scale_factor = 2, mode = 'nearest'),
         nn.Conv2d(dim, default(dim_out, dim), 3, padding = 1)
@@ -183,20 +195,20 @@ class Block(nn.Module):
         self.norm = AdaptiveGroupNorm(dim_out, groups) #norm replacement # TODO: downsample also uses this block module, whether separative norm is necessary ?
         self.act = nn.SiLU()
 
-        if dim_latent is not None:
-            self.scale_proj = nn.Linear(dim_latent, dim_out)
-            self.bias_proj = nn.Linear(dim_latent, dim_out)
+        # if dim_latent is not None:
+        self.scale_proj = nn.Linear(dim_latent, dim_out)
+        self.bias_proj = nn.Linear(dim_latent, dim_out)
 
     def forward(self, x, scale_shift = None, z = None):
         x = self.proj(x)
 
         # modulation
-        if z is not None:
-            scale = self.scale_proj(z).view(-1, self.norm.num_channels, 1, 1)
-            bias = self.bias_proj(z).view(-1, self.norm.num_channels, 1, 1)
-            x = self.norm(x, scale, bias)
-        else:
-            x = self.norm(x, torch.ones_like(x), torch.zeros_like(x))
+        # if z is not None:
+        scale = self.scale_proj(z).view(-1, self.norm.num_channels, 1, 1)
+        bias = self.bias_proj(z).view(-1, self.norm.num_channels, 1, 1)
+        x = self.norm(x, scale, bias)
+        # else:
+        #     x = self.norm(x, torch.ones_like(x), torch.zeros_like(x))
 
         if exists(scale_shift): # TODO: adjustment in scale_shift / time embedding needed ?
             scale, shift = scale_shift
@@ -218,7 +230,7 @@ class ResnetBlock(nn.Module):
         self.res_conv = nn.Conv2d(dim, dim_out, 1) if dim != dim_out else nn.Identity()
 
 
-    def forward(self, x, time_emb = None):
+    def forward(self, x, time_emb = None, latent = None):
 
         scale_shift = None
         if exists(self.mlp) and exists(time_emb):
@@ -226,7 +238,7 @@ class ResnetBlock(nn.Module):
             time_emb = rearrange(time_emb, 'b c -> b c 1 1')
             scale_shift = time_emb.chunk(2, dim = 1)
 
-        h = self.block1(x, scale_shift = scale_shift)
+        h = self.block1(x, scale_shift = scale_shift, z = latent)
 
         h = self.block2(h)
 
@@ -324,6 +336,7 @@ class Unet(nn.Module):
         out_dim = None,
         dim_mults = (1, 2, 4, 8),
         channels = 3,
+        mask_prob = 0.2,
         self_condition = False,
         resnet_block_groups = 8,
         learned_variance = False,
@@ -340,7 +353,8 @@ class Unet(nn.Module):
         
         # latent
         self.dim_latent = dim_latent
-        self.num_layers = len(self.dim_mults) * 2
+        self.num_layers = len(dim_mults) * 2
+        self.mask_prob = mask_prob
 
         # determine dimensions
 
@@ -422,7 +436,7 @@ class Unet(nn.Module):
                 block_klass(dim_out + dim_in, dim_out, time_emb_dim = time_dim),
                 block_klass(dim_out + dim_in, dim_out, time_emb_dim = time_dim),
                 attn_klass(dim_out, dim_head = layer_attn_dim_head, heads = layer_attn_heads),
-                Upsample(dim_out, dim_in, dim_latent) if not is_last else  nn.Conv2d(dim_out, dim_in, 3, padding = 1)
+                Upsample(dim_out, dim_in) if not is_last else  nn.Conv2d(dim_out, dim_in, 3, padding = 1)
             ]))
 
         default_out_dim = channels * (1 if not learned_variance else 2)
@@ -440,6 +454,8 @@ class Unet(nn.Module):
 
         # Partition the latent vector z
         z_sections = torch.chunk(z, self.num_layers // 2 + 1, dim=1)
+        # Random masking
+        z_sections = layer_masking(list(z_sections), self.mask_prob)
 
         if self.self_condition:
             x_self_cond = default(x_self_cond, lambda: torch.zeros_like(x))
@@ -468,16 +484,13 @@ class Unet(nn.Module):
         x = self.mid_block2(x, t)
 
         # upsample
-        for i, (block1, block2, attn, upsample) in self.ups:
+        for i, (block1, block2, attn, upsample) in enumerate(self.ups):
 
-            z_i = z_sections[i // 2]  # Get the corresponding section of z
-            
+            z_i = z_sections[:,i // 2,:]  # Get the corresponding section of z
+            print(z_i.size())
             # z_i for modulation
-            x = block1(x, t, x_i)
-            x = block2(x, t, x_i)
-
-            # layer masking - layer masking to each latent sub-vector during training
-            x = layer_masking(z_i, mask_prob)
+            x = block1(x, t, z_i)
+            x = block2(x, t, z_i)
             
             x = torch.cat((x, h.pop()), dim = 1)
             x = block1(x, t)
