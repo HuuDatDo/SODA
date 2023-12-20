@@ -102,17 +102,20 @@ def layer_masking(z, mask_prob=0.2):
     mask = mask.expand(batch_size, num_latent, dim)
     return z * mask
 
-# modulation
+# Adaptive group normalization
 
-class ModulatedNorm(nn.Module):
-    def __init__(self, num_features, num_groups=32):
+class AdaptiveGroupNorm(nn.Module):
+    """
+    AdaGN that controls their scale and bias - z_s * GroupNorm(h) + z_b
+    where (z_s, z_b) are linear projections of z.
+    """
+    def __init__(self, num_channels, num_groups=8):
         super().__init__()
-        self.group_norm = torch.nn.GroupNorm(num_groups=num_groups, num_channels=num_features, eps=1e-6, affine=False)
+        self.num_channels = num_channels
+        self.group_norm = nn.GroupNorm(num_groups, num_channels)
 
-    def forward(self, x, z_s, z_b):
-        x = self.group_norm(x)
-        x = x * z_s[:, :, None, None] + z_b[:, :, None, None]
-        return x
+    def forward(self, x, x_s, x_b):
+        return x_s * self.group_norm(x) + x_b
 
 # small helper modules
 
@@ -173,27 +176,29 @@ class RandomOrLearnedSinusoidalPosEmb(nn.Module):
 # building block modules
 
 class Block(nn.Module):
-    def __init__(self, dim, dim_out, groups = 8, use_modulation=True):
+    def __init__(self, dim, dim_out, groups = 8, dim_latent=None):
         super().__init__()
         self.proj = nn.Conv2d(dim, dim_out, 3, padding = 1)
-        self.norm = nn.GroupNorm(groups, dim_out)
+        #self.norm = nn.GroupNorm(groups, dim_out)
+        self.norm = AdaptiveGroupNorm(dim_out, groups) #norm replacement # TODO: downsample also uses this block module, whether separative norm is necessary ?
         self.act = nn.SiLU()
 
-        self.use_modulation = use_modulation
-        if self.use_modulation:
-            self.modulated_norm1 = ModulatedNorm(in_channels)
-            self.modulated_norm2 = ModulatedNorm(out_channels)
+        if dim_latent is not None:
+            self.scale_proj = nn.Linear(dim_latent, dim_out)
+            self.bias_proj = nn.Linear(dim_latent, dim_out)
 
-    def forward(self, x, scale_shift = None, z_s=None, z_b=None):
+    def forward(self, x, scale_shift = None, z = None):
         x = self.proj(x)
-        # norm replacement
-        # x = self.norm(x)
-        if self.use_modulation and z_s is not None and z_b is not None:
-            x = self.modulated_norm(x, z_s, z_b)
-        else:
-            x = self.norm(x)
 
-        if exists(scale_shift):
+        # modulation
+        if z is not None:
+            scale = self.scale_proj(z).view(-1, self.norm.num_channels, 1, 1)
+            bias = self.bias_proj(z).view(-1, self.norm.num_channels, 1, 1)
+            x = self.norm(x, scale, bias)
+        else:
+            x = self.norm(x, torch.ones_like(x), torch.zeros_like(x))
+
+        if exists(scale_shift): # TODO: adjustment in scale_shift / time embedding needed ?
             scale, shift = scale_shift
             x = x * (scale + 1) + shift
 
@@ -213,7 +218,7 @@ class ResnetBlock(nn.Module):
         self.res_conv = nn.Conv2d(dim, dim_out, 1) if dim != dim_out else nn.Identity()
 
 
-    def forward(self, x, time_emb = None, z_s=None, z_b=None):
+    def forward(self, x, time_emb = None):
 
         scale_shift = None
         if exists(self.mlp) and exists(time_emb):
@@ -308,47 +313,13 @@ class Attention(nn.Module):
         out = rearrange(out, 'b h (x y) d -> b (h d) x y', x = h, y = w)
         return self.to_out(out)
 
-# conceptual
-
-# class ModulatedUNet(nn.Module):
-#     def __init__(self, unet, num_latent_sections):
-#         super().__init__()
-#         self.unet = unet
-#         self.num_latent_sections = num_latent_sections
-
-#     def forward(self, x, t, z):
-#         zs = torch.chunk(z, self.num_latent_sections + 1, dim=1)
-        
-#         # Modulation
-#         x = x * zs[0] 
-#         intermediates = []
-#         for i, layer in enumerate(self.unet.layers):
-#             if isinstance(layer, (Downsample, Upsample, ResnetBlock)):
-#                 scale_shift = zs[(i // 2) + 1] if i < len(zs) else None
-#                 x = layer(x, t, scale_shift)
-#             else:
-#                 x = layer(x)
-#             intermediates.append(x)
-
-#         # masking: randomly zero out some of zs sections
-#         if self.training:
-#             mask = torch.bernoulli(torch.full((len(zs),), 0.5)).to(x.device)
-#             intermediates = [intermediate * mask[i] for i, intermediate in enumerate(intermediates)]
-
-#         for i, layer in enumerate(reversed(self.unet.layers)):
-#             index = len(self.unet.layers) - i - 1
-#             x = layer(x, intermediates[index])
-
-#         return x
-
-# modulated_unet = ModulatedUNet(unet, num_latent_sections=m)
-
 # model
 
 class Unet(nn.Module):
     def __init__(
         self,
         dim,
+        dim_latent, 
         init_dim = None,
         out_dim = None,
         dim_mults = (1, 2, 4, 8),
@@ -363,12 +334,13 @@ class Unet(nn.Module):
         attn_dim_head = 32,
         attn_heads = 4,
         full_attn = None,    # defaults to full attention only for inner most layer
-        flash_attn = False,
-        use_modulation = True 
+        flash_attn = False
     ):
         super().__init__()
         
-        self.m = resnet_block_groups // 2 # half
+        # latent
+        self.dim_latent = dim_latent
+        self.num_layers = len(self.dim_mults) * 2
 
         # determine dimensions
 
@@ -450,7 +422,7 @@ class Unet(nn.Module):
                 block_klass(dim_out + dim_in, dim_out, time_emb_dim = time_dim),
                 block_klass(dim_out + dim_in, dim_out, time_emb_dim = time_dim),
                 attn_klass(dim_out, dim_head = layer_attn_dim_head, heads = layer_attn_heads),
-                Upsample(dim_out, dim_in) if not is_last else  nn.Conv2d(dim_out, dim_in, 3, padding = 1)
+                Upsample(dim_out, dim_in, dim_latent) if not is_last else  nn.Conv2d(dim_out, dim_in, 3, padding = 1)
             ]))
 
         default_out_dim = channels * (1 if not learned_variance else 2)
@@ -466,16 +438,8 @@ class Unet(nn.Module):
     def forward(self, x, z, time, x_self_cond = None):
         assert all([divisible_by(d, self.downsample_factor) for d in x.shape[-2:]]), f'your input dimensions {x.shape[-2:]} need to be divisible by {self.downsample_factor}, given the unet'
 
-        num_layers = self.m + 1 # m + 1 sections
-        z_s, z_b = torch.chunk(z, 2 * num_layers, dim=1) # z to 2*m pieces
-
-        z_s_sections = torch.chunk(z_s, num_layers, dim=1)
-        z_b_sections = torch.chunk(z_b, num_layers, dim=1)
-
-        # layer masking to each latent sub-vector during training
-        if self.training and mask_prob is not None:
-            z_s_sections = layer_masking(z_s_sections, mask_prob)
-            z_b_sections = layer_masking(z_b_sections, mask_prob)
+        # Partition the latent vector z
+        z_sections = torch.chunk(z, self.num_layers // 2 + 1, dim=1)
 
         if self.self_condition:
             x_self_cond = default(x_self_cond, lambda: torch.zeros_like(x))
@@ -503,12 +467,18 @@ class Unet(nn.Module):
         x = self.mid_attn(x) + x
         x = self.mid_block2(x, t)
 
-        # TODO: add modulation vectors to each resblock here
         # upsample
-        for block1, block2, attn, upsample in self.ups:
-            current_z_s = z_s_sections[block1 * self.num_res_blocks + block2]
-            current_z_b = z_b_sections[block1 * self.num_res_blocks + block2]
+        for i, (block1, block2, attn, upsample) in self.ups:
 
+            z_i = z_sections[i // 2]  # Get the corresponding section of z
+            
+            # z_i for modulation
+            x = block1(x, t, x_i)
+            x = block2(x, t, x_i)
+
+            # layer masking - layer masking to each latent sub-vector during training
+            x = layer_masking(z_i, mask_prob)
+            
             x = torch.cat((x, h.pop()), dim = 1)
             x = block1(x, t)
 
@@ -516,7 +486,7 @@ class Unet(nn.Module):
             x = block2(x, t)
             x = attn(x) + x
 
-            x = upsample(x, z_s=current_z_s, z_b=current_z_b)
+            x = upsample(x)
 
         x = torch.cat((x, r), dim = 1)
 

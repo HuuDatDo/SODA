@@ -8,8 +8,7 @@ from ddpm.denoising_diffusion_pytorch import Unet, GaussianDiffusion, Trainer
 model = Unet(
     dim = 64,
     dim_mults = (1, 2, 4, 8),
-    flash_attn = True,
-    use_modulation = True
+    flash_attn = True
 )
 
 clip_model, _ = clip.load('RN50', device='cpu')
