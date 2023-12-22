@@ -202,8 +202,6 @@ class Block(nn.Module):
         x = self.proj(x)
         
         if exists(z):
-            print("z here", z.size())
-            print("scale_proj", self.scale_proj)
             scale = self.scale_proj(z).view(-1, self.norm.num_channels, 1, 1)
             bias = self.bias_proj(z).view(-1, self.norm.num_channels, 1, 1)
             x = self.norm(x, scale, bias)
@@ -453,10 +451,9 @@ class Unet(nn.Module):
 
         # Partition the latent vector z
         z_sections = torch.chunk(z, self.num_layers // 2 + 1, dim=1)
-        print("partition successful", len(z_sections))
+
         # Random masking
         z_sections = layer_masking(list(z_sections), self.mask_prob)
-        print("masking successul", z_sections.size())
 
         if self.self_condition:
             x_self_cond = default(x_self_cond, lambda: torch.zeros_like(x))
@@ -466,45 +463,32 @@ class Unet(nn.Module):
         r = x.clone()
 
         t = self.time_mlp(time)
-        print("time", t)
 
         h = []
 
-        print("begin downsample")
 
         # downsample
         for i, (block1, block2, attn, downsample) in enumerate(self.downs):
             z_i = z_sections[:,i // 2,:]
-            print("z_i size",z_i.size())
 
             x = block1(x, z_i, t)
-            print("after 1st block1", x.size())
+           
             h.append(x)
 
             x = block2(x, None, t)
-            print("after 2nd block2", x.size())
+           
             x = attn(x) + x
             h.append(x)
 
             x = downsample(x)
 
-        print("downsample successful")
-
-        print("begin mid")
         x = self.mid_block1(x, None, t)
         x = self.mid_attn(x) + x
         x = self.mid_block2(x, None,t)
-        print("mid successful", x.size())
 
-        print("begin upsample")
         # upsample
         for i, (block1, block2, attn, upsample) in enumerate(self.ups):
             z_i = z_sections[:,i // 2,:]  # Get the corresponding section of z
-            print("finished partitioning", z_i.size())
-            
-            x = block1(x, z_i, t)
-            print("done block1")
-            x = block2(x, None, t)
             
             x = torch.cat((x, h.pop()), dim = 1)
             x = block1(x, z_i, t)
@@ -517,9 +501,8 @@ class Unet(nn.Module):
 
         x = torch.cat((x, r), dim = 1)
 
-        x = self.final_res_block(x, t)
+        x = self.final_res_block(x, None, t)
         return self.final_conv(x)
-    print("upsample successful")
 
 # gaussian diffusion trainer class
 
