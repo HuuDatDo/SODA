@@ -12,8 +12,8 @@ model = Unet(
     flash_attn = True
 )
 
-clip_model, _ = clip.load('RN50', device='cpu')
-encoder = clip_model.visual.eval()
+clip_model, _ = clip.load('RN50')
+encoder = clip_model.visual.float()
 
 diffusion = GaussianDiffusion(
     model,
@@ -41,9 +41,9 @@ dataset = torchvision.datasets.CIFAR10(root='./data', train=True,
 trainer = Trainer(
     diffusion,
     dataset,
-    train_batch_size = 16,
+    train_batch_size = 8,
     train_lr = 8e-5,
-    train_num_steps = 700000,         # total training steps
+    train_num_steps = 100000,         # total training steps
     gradient_accumulate_every = 2,    # gradient accumulation steps
     ema_decay = 0.995,                # exponential moving average decay
     amp = True,                       # turn on mixed precision

@@ -490,9 +490,9 @@ class Unet(nn.Module):
         for i, (block1, block2, attn, upsample) in enumerate(self.ups):
             z_i = z_sections[:,i // 2,:]  # Get the corresponding section of z
             
-            x = block1(x, z_i, t)
+            # x = block1(x, z_i, t)
 
-            x = block(x, None, t)
+            # x = block2(x, None, t)
 
             x = torch.cat((x, h.pop()), dim = 1)
             x = block1(x, z_i, t)
