@@ -2,6 +2,7 @@ import clip
 from datasets import load_dataset
 import torchvision
 from torchvision import transforms
+from torch.utils.data import Dataset
 
 from ddpm.denoising_diffusion_pytorch import Unet, GaussianDiffusion, Trainer
 # TODO: Add Layer Modulation to Unet
@@ -34,13 +35,28 @@ transform = transforms.Compose([
         transforms.ToTensor(),
         transforms.Normalize((0.48145466, 0.4578275, 0.40821073), (0.26862954, 0.26130258, 0.27577711)),
     ])
+augment = transforms.RandAugment()
 dataset = torchvision.datasets.CIFAR10(root='./data', train=True,
-                                        download=True, transform=transform)
-
+                                        download=True)
+class SelfSupervisedDataset(Dataset):
+    def __init__(self, dataset, transform, augment):
+        self.dataset = dataset
+        self.transform = transform
+        self.augment =augment
+        
+    def __len__(self):
+        return len(self.dataset)
+    
+    def __getitem__(self, index):
+        image = self.dataset[index][0]
+        aug_img = self.augment(image)
+        return self.transform(image), self.transform(aug_img)
+    
+ssl_dataset = SelfSupervisedDataset(dataset, transform, augment)
 # TODO: Add encoder to Trainer
 trainer = Trainer(
     diffusion,
-    dataset,
+    ssl_dataset,
     train_batch_size = 8,
     train_lr = 8e-5,
     train_num_steps = 100000,         # total training steps

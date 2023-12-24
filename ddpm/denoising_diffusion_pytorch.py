@@ -448,7 +448,6 @@ class Unet(nn.Module):
 
     def forward(self, x, z, time, x_self_cond = None):
         assert all([divisible_by(d, self.downsample_factor) for d in x.shape[-2:]]), f'your input dimensions {x.shape[-2:]} need to be divisible by {self.downsample_factor}, given the unet'
-
         # Partition the latent vector z
         z_sections = torch.chunk(z, self.num_layers // 2 + 1, dim=1)
 
@@ -912,14 +911,15 @@ class GaussianDiffusion(nn.Module):
         loss = loss * extract(self.loss_weight, t, loss.shape)
         return loss.mean()
 
-    def forward(self, img, *args, **kwargs):
+    def forward(self, img, aug_img, *args, **kwargs):
         b, c, h, w, device, img_size, = *img.shape, img.device, self.image_size
         assert h == img_size and w == img_size, f'height and width of image must be {img_size}'
         t = torch.randint(0, self.num_timesteps, (b,), device=device).long()
 
         img = self.normalize(img)
+        aug_img = self.normalize(aug_img)
         # Replace img with other input
-        return self.p_losses(img, img, t, *args, **kwargs)
+        return self.p_losses(img, aug_img, t, *args, **kwargs)
 
 # dataset classes
 
@@ -1129,10 +1129,10 @@ class Trainer(object):
                 total_loss = 0.
 
                 for _ in range(self.gradient_accumulate_every):
-                    data = next(self.dl)[0].to(device)
+                    data = [i.to(device) for i in next(self.dl)]
 
                     with self.accelerator.autocast():
-                        loss = self.model(data)
+                        loss = self.model(data[0], data[1])
                         loss = loss / self.gradient_accumulate_every
                         total_loss += loss.item()
 
