@@ -28,6 +28,8 @@ from accelerate import Accelerator
 
 from ddpm.attend import Attend
 from ddpm.fid_evaluation import FIDEvaluation
+from ddpm.eval_linear import eval_linear
+import argparse
 
 from ddpm.version import __version__
 
@@ -964,6 +966,7 @@ class Trainer(object):
         self,
         diffusion_model,
         folder,
+        args,
         *,
         train_batch_size = 16,
         gradient_accumulate_every = 1,
@@ -987,6 +990,8 @@ class Trainer(object):
         save_best_and_latest_only = False
     ):
         super().__init__()
+
+        self.args = args
 
         # accelerator
 
@@ -1171,10 +1176,12 @@ class Trainer(object):
 
                         utils.save_image(all_images, str(self.results_folder / f'sample-{milestone}.png'), nrow = int(math.sqrt(self.num_samples)))
 
+                        eval_linear(self.args, self.model.encoder)
+
                         # whether to calculate fid
 
                         if self.calculate_fid:
-                            fid_score = self.fid_scorer.fid_score()
+                            fid_score = self.fid_scorer.fid_score(sample_latent)
                             accelerator.print(f'fid_score: {fid_score}')
                         if self.save_best_and_latest_only:
                             if self.best_fid > fid_score:
