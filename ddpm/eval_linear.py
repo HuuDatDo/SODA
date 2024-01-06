@@ -25,7 +25,7 @@ from torchvision import transforms as pth_transforms
 from torchvision import models as torchvision_models
 
 from . import utils
-# import vision_transformer as vits
+from . import vision_transformer as vits
 
 
 def eval_linear(args, model):
@@ -68,7 +68,7 @@ def eval_linear(args, model):
         pth_transforms.ToTensor(),
         pth_transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
     ])
-    dataset_val = datasets.ImageFolder(os.path.join(args.data_path, "val"), transform=val_transform)
+    dataset_val = datasets.ImageFolder(args.dataset_val, transform=val_transform)
     val_loader = torch.utils.data.DataLoader(
         dataset_val,
         batch_size=args.batch_size_per_gpu,
@@ -88,7 +88,7 @@ def eval_linear(args, model):
         pth_transforms.ToTensor(),
         pth_transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
     ])
-    dataset_train = datasets.ImageFolder(os.path.join(args.data_path, "train"), transform=train_transform)
+    dataset_train = datasets.ImageFolder(args.dataset_train, transform=train_transform)
     sampler = torch.utils.data.distributed.DistributedSampler(dataset_train)
     train_loader = torch.utils.data.DataLoader(
         dataset_train,

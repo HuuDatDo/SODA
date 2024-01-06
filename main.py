@@ -31,6 +31,9 @@ dataset_path = "/home/ubuntu/22dat.dh/CZSL/mit-states"
 train_dataset = AugmentedCompositionDataset(dataset_path,
                                     phase='train',
                                     split='compositional-split-natural')
+val_dataset = AugmentedCompositionDataset(dataset_path,
+                                    phase='val',
+                                    split='compositional-split-natural')
 
 args = argparse.Namespace(
     n_last_blocks = 4,
@@ -42,14 +45,16 @@ args = argparse.Namespace(
     epochs = 100,
     lr = 0.001,
     batch_size_per_gpu = 128,
-    dis_url = "env://",
+    dist_url = "env://",
     local_rank = 0,
     data_path = dataset_path,
     num_workers = 10,
     val_freq = 1,
     output_dir = ".",
     num_labels = 1000,
-    evaluate = True
+    evaluate = True, 
+    dataset_val = val_dataset, 
+    dataset_train = train_dataset
 )
 
 trainer = Trainer(
