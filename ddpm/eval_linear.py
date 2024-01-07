@@ -26,6 +26,7 @@ from torchvision import models as torchvision_models
 
 from . import utils
 from . import vision_transformer as vits
+from dataset import AugmentedCompositionDataset
 
 
 def eval_linear(args, model):
@@ -68,7 +69,10 @@ def eval_linear(args, model):
         pth_transforms.ToTensor(),
         pth_transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
     ])
-    dataset_val = datasets.ImageFolder(args.dataset_val, transform=val_transform)
+    dataset_val = datasets.ImageFolder(os.path.join(args.data_path, "val"), transform=val_transform)
+    #dataset_val = AugmentedCompositionDataset(args.data_path,
+    #                                phase='train',
+    #                                split='compositional-split-natural')
     val_loader = torch.utils.data.DataLoader(
         dataset_val,
         batch_size=args.batch_size_per_gpu,
@@ -78,7 +82,7 @@ def eval_linear(args, model):
 
     if args.evaluate:
         utils.load_pretrained_linear_weights(linear_classifier, args.arch, args.patch_size)
-        test_stats = validate_network(val_loader, model, linear_classifier, args.n_last_blocks, args.avgpool_patchtokens)
+        test_stats = validate_network(val_loader, model, linear_classifier, args.n_last_blocks, args.avgpool_patchtokens, args)
         print(f"Accuracy of the network on the {len(dataset_val)} test images: {test_stats['acc1']:.1f}%")
         return
 
@@ -88,7 +92,10 @@ def eval_linear(args, model):
         pth_transforms.ToTensor(),
         pth_transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
     ])
-    dataset_train = datasets.ImageFolder(args.dataset_train, transform=train_transform)
+    dataset_train = datasets.ImageFolder(os.path.join(args.data_path, "train"), transform=train_transform)
+    #dataset_train = AugmentedCompositionDataset(args.data_path,
+    #                                phase='train',
+    #                                split='compositional-split-natural')
     sampler = torch.utils.data.distributed.DistributedSampler(dataset_train)
     train_loader = torch.utils.data.DataLoader(
         dataset_train,
@@ -129,7 +136,7 @@ def eval_linear(args, model):
         log_stats = {**{f'train_{k}': v for k, v in train_stats.items()},
                      'epoch': epoch}
         if epoch % args.val_freq == 0 or epoch == args.epochs - 1:
-            test_stats = validate_network(val_loader, model, linear_classifier, args.n_last_blocks, args.avgpool_patchtokens)
+            test_stats = validate_network(val_loader, model, linear_classifier, args.n_last_blocks, args.avgpool_patchtokens, args)
             print(f"Accuracy at epoch {epoch} of the network on the {len(dataset_val)} test images: {test_stats['acc1']:.1f}%")
             best_acc = max(best_acc, test_stats["acc1"])
             print(f'Max accuracy so far: {best_acc:.2f}%')
@@ -193,7 +200,7 @@ def train(model, linear_classifier, optimizer, loader, epoch, n, avgpool):
 
 
 @torch.no_grad()
-def validate_network(val_loader, model, linear_classifier, n, avgpool):
+def validate_network(val_loader, model, linear_classifier, n, avgpool, args):
     linear_classifier.eval()
     metric_logger = utils.MetricLogger(delimiter="  ")
     header = 'Test:'
