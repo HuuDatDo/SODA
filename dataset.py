@@ -1,5 +1,6 @@
 from itertools import product
 
+import os
 import numpy as np
 import torch
 from PIL import Image
@@ -361,3 +362,22 @@ class AugmentedCompositionDataset(Dataset):
 
     def __len__(self):
         return len(self.data)
+    
+
+class ImagenetDataset(Dataset):
+    def __init__(self, path):
+        self.path = path
+        self.list_dir = os.listdir(self.path)
+        self.transform = transform_image("train", imagenet=True)
+        self.augmentation = RandAugment()
+        
+    def __len__(self):
+        return len(self.list_dir)
+    
+    def __getitem__(self, index):
+        img_path = os.path.join(self.path, self.list_dir[index])
+        img = Image.open(img_path).convert('RGB')
+        augmented_img = self.augmentation(img)
+        img = self.transform(img)
+        augmented_img = self.transform(img)
+        return img, augmented_img
