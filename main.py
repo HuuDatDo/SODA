@@ -37,8 +37,9 @@ def main(args):
                                             phase='val',
                                             split='compositional-split-natural')
     elif args.dataset == "imagenet":
-        dataset_path = "/home/ubuntu/22dat.dh/CZSL/data"
-        dataset = ImagenetDataset(dataset_path)
+        dataset_path = "/home/ubuntu/22dat.dh/CZSL/imagenet"
+        train_dataset = ImagenetDataset(dataset_path)
+        val_dataset = ImagenetDataset(dataset_path) #lazyy, split later :(
 
     args = argparse.Namespace(
         n_last_blocks = 4,
@@ -66,10 +67,10 @@ def main(args):
         diffusion,
         train_dataset,
         args,
-        train_batch_size = 4,
+        train_batch_size = 1,
         train_lr = 8e-5,
         train_num_steps = 100000,         # total training steps
-        gradient_accumulate_every = 4,    # gradient accumulation steps
+        gradient_accumulate_every = 16,    # gradient accumulation steps
         ema_decay = 0.995,                # exponential moving average decay
         amp = True,                       # turn on mixed precision
         calculate_fid = True              # whether to calculate fid during training
@@ -80,6 +81,6 @@ def main(args):
     
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--dataset", type=str, options=["mit-states", "imagenet"], required=True)
+    parser.add_argument("--dataset", type=str, choices=["mit-states", "imagenet"], required=True)
     args = parser.parse_args()
     main(args)

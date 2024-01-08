@@ -379,5 +379,5 @@ class ImagenetDataset(Dataset):
         img = Image.open(img_path).convert('RGB')
         augmented_img = self.augmentation(img)
         img = self.transform(img)
-        augmented_img = self.transform(img)
+        augmented_img = self.transform(augmented_img)
         return img, augmented_img
