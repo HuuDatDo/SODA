@@ -87,6 +87,18 @@ def normalize_to_neg_one_to_one(img):
 def unnormalize_to_zero_to_one(t):
     return (t + 1) * 0.5
 
+# Padding
+def padding(z):
+    batch_size, dim = z[0].size()
+    # device = z[0].device
+    # num_latent = len(z)
+    # Pad the sub-latent to the same size
+    for i, sub_z in enumerate(z):
+        if sub_z.size(-1) != dim:
+            z[i] = F.pad(sub_z, (0,dim-sub_z.size(1),0,0), 'constant', 0)
+    z = torch.stack(z, dim=1)
+    return z
+
 # Layer Masking
 def layer_masking(z, mask_prob):
     """
@@ -103,11 +115,6 @@ def layer_masking(z, mask_prob):
     device = z[0].device
     num_latent = len(z)
     
-    # Pad the sub-latent to the same size
-    for i, sub_z in enumerate(z):
-        if sub_z.size(-1) != dim:
-            z[i] = F.pad(sub_z, (0,dim-sub_z.size(1),0,0), 'constant', 0)
-    z = torch.stack(z, dim=1)
     # Generate a mask using Bernoulli distribution
     mask = torch.bernoulli(torch.full((batch_size, num_latent), mask_prob)).unsqueeze(-1)
     mask = mask.expand(batch_size, num_latent, dim).to(device)
@@ -219,7 +226,7 @@ class Block(nn.Module):
         return x
 
 class ResnetBlock(nn.Module):
-    def __init__(self, dim, dim_out, dim_latent = 205, *, time_emb_dim = None, groups = 8):
+    def __init__(self, dim, dim_out, dim_latent, *, time_emb_dim = None, groups = 8):
         super().__init__()
         self.mlp = nn.Sequential(
             nn.SiLU(),
@@ -332,7 +339,7 @@ class Unet(nn.Module):
     def __init__(
         self,
         dim,
-        dim_latent, 
+        latent_dim, 
         init_dim = None,
         out_dim = None,
         dim_mults = (1, 2, 4, 8),
@@ -353,7 +360,7 @@ class Unet(nn.Module):
         super().__init__()
         
         # latent
-        self.dim_latent = dim_latent
+        self.latent_dim = latent_dim
         self.num_layers = len(dim_mults) * 2
         self.mask_prob = mask_prob
 
@@ -368,6 +375,8 @@ class Unet(nn.Module):
         dims = [init_dim, *map(lambda m: dim * m, dim_mults)]
         in_out = list(zip(dims[:-1], dims[1:]))
 
+        #TODO: Change 205 to variable
+        self.latent_linear = nn.Linear(205, latent_dim)
         block_klass = partial(ResnetBlock, groups = resnet_block_groups)
 
         # time embeddings
@@ -416,16 +425,16 @@ class Unet(nn.Module):
             attn_klass = FullAttention if layer_full_attn else LinearAttention
 
             self.downs.append(nn.ModuleList([
-                block_klass(dim_in, dim_in, time_emb_dim = time_dim),
-                block_klass(dim_in, dim_in, time_emb_dim = time_dim),
+                block_klass(dim_in, dim_in, self.latent_dim, time_emb_dim = time_dim),
+                block_klass(dim_in, dim_in, self.latent_dim, time_emb_dim = time_dim),
                 attn_klass(dim_in, dim_head = layer_attn_dim_head, heads = layer_attn_heads),
                 Downsample(dim_in, dim_out) if not is_last else nn.Conv2d(dim_in, dim_out, 3, padding = 1)
             ]))
 
         mid_dim = dims[-1]
-        self.mid_block1 = block_klass(mid_dim, mid_dim, time_emb_dim = time_dim)
+        self.mid_block1 = block_klass(mid_dim, mid_dim, self.latent_dim, time_emb_dim = time_dim)
         self.mid_attn = FullAttention(mid_dim, heads = attn_heads[-1], dim_head = attn_dim_head[-1])
-        self.mid_block2 = block_klass(mid_dim, mid_dim, time_emb_dim = time_dim)
+        self.mid_block2 = block_klass(mid_dim, mid_dim, self.latent_dim, time_emb_dim = time_dim)
 
         for ind, ((dim_in, dim_out), layer_full_attn, layer_attn_heads, layer_attn_dim_head) in enumerate(zip(*map(reversed, (in_out, full_attn, attn_heads, attn_dim_head)))):
             is_last = ind == (len(in_out) - 1)
@@ -433,8 +442,8 @@ class Unet(nn.Module):
             attn_klass = FullAttention if layer_full_attn else LinearAttention
 
             self.ups.append(nn.ModuleList([
-                block_klass(dim_out + dim_in, dim_out, time_emb_dim = time_dim),
-                block_klass(dim_out + dim_in, dim_out, time_emb_dim = time_dim),
+                block_klass(dim_out + dim_in, dim_out, self.latent_dim, time_emb_dim = time_dim),
+                block_klass(dim_out + dim_in, dim_out, self.latent_dim, time_emb_dim = time_dim),
                 attn_klass(dim_out, dim_head = layer_attn_dim_head, heads = layer_attn_heads),
                 Upsample(dim_out, dim_in) if not is_last else  nn.Conv2d(dim_out, dim_in, 3, padding = 1)
             ]))
@@ -442,7 +451,7 @@ class Unet(nn.Module):
         default_out_dim = channels * (1 if not learned_variance else 2)
         self.out_dim = default(out_dim, default_out_dim)
 
-        self.final_res_block = block_klass(dim * 2, dim, time_emb_dim = time_dim)
+        self.final_res_block = block_klass(dim * 2, dim, self.latent_dim, time_emb_dim = time_dim)
         self.final_conv = nn.Conv2d(dim, self.out_dim, 1)
 
     @property
@@ -453,9 +462,11 @@ class Unet(nn.Module):
         assert all([divisible_by(d, self.downsample_factor) for d in x.shape[-2:]]), f'your input dimensions {x.shape[-2:]} need to be divisible by {self.downsample_factor}, given the unet'
         # Partition the latent vector z
         z_sections = torch.chunk(z, self.num_layers // 2 + 1, dim=1)
+        z_sections = padding(list(z_sections))
+        z_sections = self.latent_linear(z_sections)
 
         # Random masking
-        z_sections = layer_masking(list(z_sections), self.mask_prob)
+        z_sections = layer_masking(z_sections, self.mask_prob)
 
         if self.self_condition:
             x_self_cond = default(x_self_cond, lambda: torch.zeros_like(x))
@@ -504,7 +515,7 @@ class Unet(nn.Module):
             x = attn(x) + x
 
             x = upsample(x)
-
+        print(x.size(), r.size())
         x = torch.cat((x, r), dim = 1)
 
         x = self.final_res_block(x, None, t)

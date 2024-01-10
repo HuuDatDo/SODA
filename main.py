@@ -11,7 +11,7 @@ from ddpm.denoising_diffusion_pytorch import Unet, GaussianDiffusion, Trainer
 def main(args):
     model = Unet(
         dim = 128,
-        dim_latent = 128,
+        latent_dim = 128,
         dim_mults = (1, 2, 4, 8),
         flash_attn = True
     )
