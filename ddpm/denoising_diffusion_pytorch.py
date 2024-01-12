@@ -111,9 +111,9 @@ def layer_masking(z, mask_prob):
     Returns:
     - masked_z: The masked latent tensor.
     """
-    batch_size, dim = z[0].size()
+    batch_size, num_latent, dim = z.size()
     device = z[0].device
-    num_latent = len(z)
+    # num_latent = len(z)
     
     # Generate a mask using Bernoulli distribution
     mask = torch.bernoulli(torch.full((batch_size, num_latent), mask_prob)).unsqueeze(-1)
@@ -515,7 +515,6 @@ class Unet(nn.Module):
             x = attn(x) + x
 
             x = upsample(x)
-        print(x.size(), r.size())
         x = torch.cat((x, r), dim = 1)
 
         x = self.final_res_block(x, None, t)
