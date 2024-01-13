@@ -3,7 +3,7 @@ from datasets import load_dataset
 import torchvision
 from torchvision import transforms
 from torch.utils.data import Dataset
-from dataset import AugmentedCompositionDataset, ImagenetDataset
+from dataset import AugmentedCompositionDataset, ImagenetDataset, SelfSupervisedDataset
 import argparse
 
 from ddpm.denoising_diffusion_pytorch import Unet, GaussianDiffusion, Trainer
@@ -26,8 +26,13 @@ def main(args):
         timesteps = 1000,           # number of steps
         sampling_timesteps = 250    # number of sampling timesteps (using ddim for faster inference [see citation for ddim paper])
     )
-
-    if args.dataset == "mit-states":
+    if args.dataset == "cifar":
+        train_cifar = torchvision.datasets.CIFAR100(root="./", train=True, download=True)
+        val_cifar = torchvision.datasets.CIFAR100(root="./", train=False, download=True)
+        train_dataset = SelfSupervisedDataset(train_cifar)
+        val_dataset = SelfSupervisedDataset(val_cifar)
+        
+    elif args.dataset == "mit-states":
         dataset_path = "/home/ubuntu/22dat.dh/CZSL/mit-states"
         #dataset_path = "/home/ubuntu/22hao.vc/diffusion/mit-states"
         train_dataset = AugmentedCompositionDataset(dataset_path,
@@ -53,7 +58,7 @@ def main(args):
         batch_size_per_gpu = 128,
         dist_url = "env://",
         local_rank = 0,
-        data_path = dataset_path,
+        data_path = None, #dataset_path,
         num_workers = 10,
         val_freq = 1,
         output_dir = ".",
@@ -66,6 +71,7 @@ def main(args):
     trainer = Trainer(
         diffusion,
         train_dataset,
+        val_dataset,
         args,
         train_batch_size = 1,
         train_lr = 8e-5,
@@ -81,6 +87,6 @@ def main(args):
     
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--dataset", type=str, choices=["mit-states", "imagenet"], required=True)
+    parser.add_argument("--dataset", type=str, choices=["mit-states", "imagenet", "cifar"], required=True)
     args = parser.parse_args()
     main(args)

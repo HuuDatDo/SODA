@@ -1,4 +1,5 @@
 import math
+import numpy as np
 import copy
 from pathlib import Path
 from random import random
@@ -6,6 +7,7 @@ import random as rand
 from functools import partial
 from collections import namedtuple
 from multiprocessing import cpu_count
+from sklearn.linear_model import LogisticRegression
 
 import torch
 from torch import nn, einsum
@@ -976,6 +978,7 @@ class Trainer(object):
         self,
         diffusion_model,
         folder,
+        val_dataset,
         args,
         *,
         train_batch_size = 16,
@@ -986,8 +989,8 @@ class Trainer(object):
         ema_update_every = 10,
         ema_decay = 0.995,
         adam_betas = (0.9, 0.99),
-        save_and_sample_every = 5000,
-        num_samples = 4,
+        save_and_sample_every = 1,
+        num_samples = 1,
         results_folder = './results',
         amp = False,
         mixed_precision_type = 'fp16',
@@ -1039,7 +1042,8 @@ class Trainer(object):
         # dataset and dataloader
 
         self.ds = folder #Dataset(folder, self.image_size, augment_horizontal_flip = augment_horizontal_flip, convert_image_to = convert_image_to)
-
+        self.val_dataset = val_dataset
+        
         assert len(self.ds) >= 100, 'you should have at least 100 images in your folder. at least 10k images recommended'
 
         dl = DataLoader(self.ds, batch_size = train_batch_size, shuffle = True, pin_memory = True, num_workers = cpu_count())
@@ -1171,22 +1175,21 @@ class Trainer(object):
 
                     if self.step != 0 and divisible_by(self.step, self.save_and_sample_every):
                         self.ema.ema_model.eval()
+                        # with torch.inference_mode():
+                        #     milestone = self.step // self.save_and_sample_every
+                        #     batches = num_to_groups(self.num_samples, self.batch_size)
+                        #     # Random the latent
+                        #     subset_indices = rand.sample(range(len(self.ds)), self.num_samples)
+                        #     sample_latent = torch.stack([sample[1] for sample in Subset(self.ds, subset_indices)], dim=0).to(device)
+                        #     all_images_list = list(map(lambda n: self.ema.ema_model.sample(n, sample_latent), batches))
 
-                        with torch.inference_mode():
-                            milestone = self.step // self.save_and_sample_every
-                            batches = num_to_groups(self.num_samples, self.batch_size)
-                            # Random the latent
-                            print(batches, self.num_samples)
-                            subset_indices = rand.sample(range(len(self.ds)), self.num_samples)
-                            print(subset_indices)
-                            sample_latent = torch.stack([sample[1] for sample in Subset(self.ds, subset_indices)], dim=0).to(device)
-                            all_images_list = list(map(lambda n: self.ema.ema_model.sample(n, sample_latent), batches))
+                        # all_images = torch.cat(all_images_list, dim = 0)
 
-                        all_images = torch.cat(all_images_list, dim = 0)
+                        # utils.save_image(all_images, str(self.results_folder / f'sample-{milestone}.png'), nrow = int(math.sqrt(self.num_samples)))
 
-                        utils.save_image(all_images, str(self.results_folder / f'sample-{milestone}.png'), nrow = int(math.sqrt(self.num_samples)))
-
-                        eval_linear(self.args, self.model.encoder)
+                        # eval_linear(self.args, self.model.encoder)
+                        #TODO: Add linear-probe eval
+                        self.linear_probe()
 
                         # whether to calculate fid
 
@@ -1204,3 +1207,35 @@ class Trainer(object):
                 pbar.update(1)
 
         accelerator.print('training complete')
+        
+    def linear_probe(self):
+        print("BEGIN LINEAR PROBE")
+        # Calculate the image features
+        train_features, train_labels = [], []
+        with torch.no_grad():
+            for images, augmented_images, labels in tqdm(DataLoader(self.ds, batch_size=100)):
+                features = self.model.encoder(images.to(self.device))
+                train_features.append(features.squeeze())
+                train_labels.append(labels)
+
+        
+        test_features, test_labels = [], []
+        with torch.no_grad():
+            for images, augmented_images, labels in tqdm(DataLoader(self.val_dataset, batch_size=100)):
+                features = self.model.encoder(images.to(self.device))
+
+                test_features.append(features.squeeze())
+                test_labels.append(labels)
+        
+        # Convert back to numpy for scikit-learn
+        train_features = torch.cat(train_features).cpu().numpy()
+        train_labels = torch.cat(train_labels).cpu().numpy()
+        test_features = torch.cat(test_features).cpu().numpy()
+        test_labels = torch.cat(test_labels).cpu().numpy()
+        # Perform logistic regression
+        classifier = LogisticRegression(random_state=0, C=0.316, max_iter=10, verbose=1)
+        classifier.fit(train_features, train_labels)
+        predictions = classifier.predict(test_features)
+        accuracy = np.mean((test_labels == predictions).astype(float)) * 100.
+        print("ACC", accuracy)
+        return accuracy

@@ -381,3 +381,18 @@ class ImagenetDataset(Dataset):
         img = self.transform(img)
         augmented_img = self.transform(augmented_img)
         return img, augmented_img
+    
+    
+class SelfSupervisedDataset(Dataset):
+    def __init__(self, dataset):
+        self.dataset = dataset
+        self.transform = transform_image("train", imagenet=False)
+        self.augmentation = RandAugment()
+        
+    def __len__(self):
+        return len(self.dataset)
+    
+    def __getitem__(self, index):
+        image, label = self.dataset[index]
+        aug_img = self.augmentation(image)
+        return self.transform(image), self.transform(aug_img), label
