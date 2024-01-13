@@ -1175,17 +1175,17 @@ class Trainer(object):
 
                     if self.step != 0 and divisible_by(self.step, self.save_and_sample_every):
                         self.ema.ema_model.eval()
-                        # with torch.inference_mode():
-                        #     milestone = self.step // self.save_and_sample_every
-                        #     batches = num_to_groups(self.num_samples, self.batch_size)
+                        with torch.inference_mode():
+                            milestone = self.step // self.save_and_sample_every
+                            batches = num_to_groups(self.num_samples, self.batch_size)
                         #     # Random the latent
-                        #     subset_indices = rand.sample(range(len(self.ds)), self.num_samples)
-                        #     sample_latent = torch.stack([sample[1] for sample in Subset(self.ds, subset_indices)], dim=0).to(device)
-                        #     all_images_list = list(map(lambda n: self.ema.ema_model.sample(n, sample_latent), batches))
+                            subset_indices = rand.sample(range(len(self.ds)), self.num_samples)
+                            sample_latent = torch.stack([sample[1] for sample in Subset(self.ds, subset_indices)], dim=0).to(device)
+                            all_images_list = list(map(lambda n: self.ema.ema_model.sample(n, sample_latent), batches))
 
-                        # all_images = torch.cat(all_images_list, dim = 0)
+                        all_images = torch.cat(all_images_list, dim = 0)
 
-                        # utils.save_image(all_images, str(self.results_folder / f'sample-{milestone}.png'), nrow = int(math.sqrt(self.num_samples)))
+                        utils.save_image(all_images, str(self.results_folder / f'sample-{milestone}.png'), nrow = int(math.sqrt(self.num_samples)))
 
                         # eval_linear(self.args, self.model.encoder)
                         #TODO: Add linear-probe eval
