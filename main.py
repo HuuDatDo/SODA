@@ -27,10 +27,14 @@ def main(args):
         sampling_timesteps = 250    # number of sampling timesteps (using ddim for faster inference [see citation for ddim paper])
     )
     if args.dataset == "cifar":
+        resize_transform = transforms.Compose([
+            transforms.Resize((224, 224)),
+            transforms.ToTensor(),
+        ])
         train_cifar = torchvision.datasets.CIFAR100(root="./", train=True, download=True)
         val_cifar = torchvision.datasets.CIFAR100(root="./", train=False, download=True)
-        train_dataset = SelfSupervisedDataset(train_cifar)
-        val_dataset = SelfSupervisedDataset(val_cifar)
+        train_dataset = SelfSupervisedDataset(train_cifar, clip_transform=resize_transform)
+        val_dataset = SelfSupervisedDataset(val_cifar, clip_transform=resize_transform)
         
     elif args.dataset == "mit-states":
         dataset_path = "/home/ubuntu/22dat.dh/CZSL/mit-states"

@@ -384,10 +384,14 @@ class ImagenetDataset(Dataset):
     
     
 class SelfSupervisedDataset(Dataset):
-    def __init__(self, dataset):
+    def __init__(self, dataset, clip_transform=None):
         self.dataset = dataset
         self.transform = transform_image("train", imagenet=False)
         self.augmentation = RandAugment()
+        self.clip_transform = clip_transform if clip_transform is not None else transforms.Compose([
+            transforms.Resize((224, 224)),
+            transforms.ToTensor(),
+        ])
         
     def __len__(self):
         return len(self.dataset)
@@ -395,4 +399,4 @@ class SelfSupervisedDataset(Dataset):
     def __getitem__(self, index):
         image, label = self.dataset[index]
         aug_img = self.augmentation(image)
-        return self.transform(image), self.transform(aug_img), label
+        return self.transform(image), self.clip_transform(aug_img), label
