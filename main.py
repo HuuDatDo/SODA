@@ -22,7 +22,7 @@ def main(args):
     diffusion = GaussianDiffusion(
         model,
         encoder,
-        image_size = 224,
+        image_size = 64,
         timesteps = 1000,           # number of steps
         sampling_timesteps = 250    # number of sampling timesteps (using ddim for faster inference [see citation for ddim paper])
     )
@@ -73,10 +73,10 @@ def main(args):
         train_dataset,
         val_dataset,
         args,
-        train_batch_size = 1,
+        train_batch_size = 64,
         train_lr = 8e-5,
         train_num_steps = 100000,         # total training steps
-        gradient_accumulate_every = 16,    # gradient accumulation steps
+        gradient_accumulate_every = 2,    # gradient accumulation steps
         ema_decay = 0.995,                # exponential moving average decay
         amp = True,                       # turn on mixed precision
         calculate_fid = True              # whether to calculate fid during training

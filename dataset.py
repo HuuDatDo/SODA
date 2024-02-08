@@ -17,7 +17,7 @@ BICUBIC = InterpolationMode.BICUBIC
 n_px = 224
 
 
-def transform_image(split="train", imagenet=False):
+def transform_image(n_px, split="train", imagenet=False):
     if imagenet:
         # from czsl repo.
         mean, std = [0.485, 0.456, 0.406], [0.229, 0.224, 0.225]
@@ -386,7 +386,8 @@ class ImagenetDataset(Dataset):
 class SelfSupervisedDataset(Dataset):
     def __init__(self, dataset):
         self.dataset = dataset
-        self.transform = transform_image("train", imagenet=False)
+        self.transform = transform_image(64, "train", imagenet=False)
+        self.aug_transform = transform_image(224, "train", imagenet=False)
         self.augmentation = RandAugment()
         
     def __len__(self):
@@ -395,4 +396,4 @@ class SelfSupervisedDataset(Dataset):
     def __getitem__(self, index):
         image, label = self.dataset[index]
         aug_img = self.augmentation(image)
-        return self.transform(image), self.transform(aug_img), label
+        return self.transform(image), self.aug_transform(aug_img), label
