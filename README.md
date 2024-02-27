@@ -16,7 +16,7 @@ pip install -r requirements.txt
 
 ## Usage
 
-We have only implemented with Cifar100 dataset, MIT-States and Imagenet1k is not ready to use yet.
+We have only implemented with the Cifar100 dataset; MIT-States and Imagenet1k are not yet ready to use.
 
 ```bash
 python main.py --dataset cifar
