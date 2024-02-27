@@ -2,7 +2,7 @@
 
 ## Overview
 
-This is an unofficial PyTorch implementation of the paper [SODA: Bottleneck Diffusion Models for Representation Learning](https://arxiv.org/pdf/2311.17901.pdf) by Drew A. Hudson. Built based on the DDPM source code.
+This is an unofficial PyTorch implementation of the paper [SODA: Bottleneck Diffusion Models for Representation Learning](https://arxiv.org/pdf/2311.17901.pdf) by Drew A. Hudson et al (2023). Built based on the DDPM source code.
 
 ![SODA Model Diagram](figure.jpg)
 
